@@ -30,6 +30,7 @@ import {
 } from "lucide-react";
 
 type TabKey = "chart" | "botting" | "accounting" | "tools";
+type PaymentAction = "subscribe" | "topup" | "withdraw";
 
 type Candle = { o: number; h: number; l: number; c: number; t: number };
 
@@ -53,6 +54,8 @@ type BotModel = {
 };
 
 type ActivityItem = { t: number; text: string; kind: "info" | "buy" | "sell" };
+
+type PendingRequest = { id: number; title: string; amount?: number; status: string };
 
 type SymbolDef = { id: string; name: string; basePrice: number; vol: number; decimals: number; multiplier: number; defaultLots: number };
 
@@ -116,6 +119,17 @@ type PersistedEaboState = {
   botForm: { symbol: string; strategyId: StrategyId; timeframe: string; checkSec: number };
   tradeForm: { symbol: string; dir: 1 | -1; lots: number };
   askText: string;
+  subscription: { active: boolean; plan: string; amount: number };
+};
+
+type PaymentModalState = {
+  open: boolean;
+  type: PaymentAction | null;
+  selectedNetwork: string;
+  amount: string;
+  address: string;
+  countdown: number;
+  step: "details" | "payment" | "pending";
 };
 
 function getPersistedEaboState(): PersistedEaboState | null {
@@ -145,6 +159,27 @@ function fmt(value: number, decimals = 2) {
 function fmtMoney(value: number) {
   const sign = value < 0 ? "-" : "";
   return `${sign}$${fmt(Math.abs(value), 2)}`;
+}
+
+function formatCountdown(seconds: number) {
+  const mins = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  return `${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
+}
+
+function getPaymentAddress(network: string) {
+  switch (network) {
+    case "ETH":
+      return "0x8A4dB4f0D1c9E7aF4A7d3b2C4d8F0dEcB21A8A2B";
+    case "USDT TRC20":
+      return "TQf4Gq4PqYxE5Z3aQ2H8v4VmB9CxL1mJEr";
+    case "USDC":
+      return "0xC4e3d2f9B8dE1a8f9C2f3F2E5dA4A8A4c2F1F2A0";
+    case "SOL":
+      return "7Y2X9pTbf8L3Aq9mCkzP81vQrA6L7yK4sD3wX5nQh6M";
+    default:
+      return "bc1q9x4h7u2k9p3s5r7y8w0p2x4q6n8j0m2l3k5t7v";
+  }
 }
 
 function clamp(value: number, lo: number, hi: number) {
@@ -430,6 +465,13 @@ export function EABOTestPage() {
   const [botForm, setBotForm] = useState(persistedState?.botForm ?? { symbol: "XAUUSD", strategyId: "momentum" as StrategyId, timeframe: "1h", checkSec: 60 });
   const [tradeForm, setTradeForm] = useState(persistedState?.tradeForm ?? { symbol: "XAUUSD", dir: 1 as 1 | -1, lots: 0.1 });
   const [askText, setAskText] = useState(persistedState?.askText ?? "");
+  const [subscription, setSubscription] = useState(persistedState?.subscription ?? { active: false, plan: "Basic", amount: 0 });
+  const [pendingRequests, setPendingRequests] = useState<PendingRequest[]>([
+    { id: 1, title: "Subscription", amount: 99, status: "Pending" },
+    { id: 2, title: "Top-up", amount: 500, status: "Pending approval" },
+    { id: 3, title: "Withdrawal request", amount: 250, status: "Pending approval" },
+  ]);
+  const [paymentModal, setPaymentModal] = useState<PaymentModalState>({ open: false, type: null, selectedNetwork: "BTC", amount: "", address: "", countdown: 20 * 60, step: "details" });
 
   const logActivity = (text: string, kind: ActivityItem["kind"] = "info") => {
     setActivity((prev) => [{ t: Date.now(), text, kind }, ...prev].slice(0, 60));
@@ -462,8 +504,19 @@ export function EABOTestPage() {
       botForm,
       tradeForm,
       askText,
+      subscription,
     });
-  }, [tab, market, balance, positions, activity, bots, selectedSymbol, botForm, tradeForm, askText]);
+  }, [tab, market, balance, positions, activity, bots, selectedSymbol, botForm, tradeForm, askText, subscription]);
+
+  useEffect(() => {
+    if (!paymentModal.open) return;
+
+    const timer = window.setInterval(() => {
+      setPaymentModal((prev) => (prev.open ? { ...prev, countdown: Math.max(0, prev.countdown - 1) } : prev));
+    }, 1000);
+
+    return () => window.clearInterval(timer);
+  }, [paymentModal.open]);
 
   useEffect(() => {
     const interval = window.setInterval(() => {
@@ -569,8 +622,93 @@ export function EABOTestPage() {
     setBalance(START_BALANCE);
     setPositions([]);
     setBots([]);
+    setSubscription({ active: false, plan: "Basic", amount: 0 });
     setActivity([{ t: Date.now(), text: "Simulation reset — demo account funded with $10,000.00.", kind: "info" }]);
     tickCountRef.current = 0;
+  };
+
+  const openPaymentModal = (type: PaymentAction) => {
+    const defaultAmount = type === "subscribe" ? "99" : type === "topup" ? "500" : "250";
+    const defaultNetwork = type === "withdraw" ? "USDT TRC20" : "BTC";
+    const networkAddress = getPaymentAddress(defaultNetwork);
+
+    setPaymentModal({
+      open: true,
+      type,
+      selectedNetwork: defaultNetwork,
+      amount: defaultAmount,
+      address: networkAddress,
+      countdown: 20 * 60,
+      step: "details",
+    });
+  };
+
+  const closePaymentModal = () => {
+    setPaymentModal({ open: false, type: null, selectedNetwork: "BTC", amount: "", address: "", countdown: 20 * 60, step: "details" });
+  };
+
+  const showPaymentDetails = () => {
+    const parsed = Number(paymentModal.amount);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      logActivity("Enter a valid amount before proceeding.", "info");
+      return;
+    }
+
+    setPaymentModal((prev) => ({ ...prev, step: "payment", address: getPaymentAddress(prev.selectedNetwork), countdown: 20 * 60 }));
+  };
+
+  const confirmPayment = () => {
+    if (!paymentModal.type) return;
+
+    const parsed = Number(paymentModal.amount);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      logActivity("Enter a valid amount before confirming.", "info");
+      return;
+    }
+
+    if (paymentModal.countdown <= 0) {
+      logActivity("This payment window has expired. Please open it again.", "info");
+      return;
+    }
+
+    if (paymentModal.type === "subscribe") {
+      if (balance < parsed) {
+        logActivity("Subscription failed — insufficient balance.", "info");
+        return;
+      }
+    } else if (paymentModal.type === "withdraw" && parsed > balance) {
+      logActivity("Withdrawal failed — insufficient balance.", "info");
+      return;
+    }
+
+    const actionLabel = paymentModal.type === "subscribe" ? "subscription" : paymentModal.type === "topup" ? "top-up" : "withdrawal";
+    logActivity(`Your ${actionLabel} request is now pending confirmation.`, "info");
+    setPendingRequests((prev) => [
+      {
+        id: Date.now(),
+        title: paymentModal.type === "subscribe" ? "Subscription" : paymentModal.type === "topup" ? "Top-up" : "Withdrawal request",
+        amount: parsed,
+        status: paymentModal.type === "subscribe" ? "Pending" : "Pending approval",
+      },
+      ...prev,
+    ].slice(0, 6));
+    setPaymentModal((prev) => ({ ...prev, step: "pending" }));
+
+    window.setTimeout(() => {
+      if (paymentModal.type === "subscribe") {
+        setBalance((value) => value - parsed);
+        setSubscription({ active: true, plan: "Pro Bot", amount: parsed });
+        logActivity(`Subscribed to Pro Bot with ${fmtMoney(parsed)} via ${paymentModal.selectedNetwork}.`, "info");
+      } else if (paymentModal.type === "topup") {
+        setBalance((value) => value + parsed);
+        logActivity(`Added ${fmtMoney(parsed)} to your trading account via ${paymentModal.selectedNetwork}.`, "buy");
+      } else {
+        setBalance((value) => value - parsed);
+        logActivity(`Requested withdrawal of ${fmtMoney(parsed)} to ${paymentModal.address}.`, "sell");
+      }
+
+      closePaymentModal();
+    }, 1400);
   };
 
   const askModel = (bot: BotModel) => {
@@ -595,47 +733,236 @@ export function EABOTestPage() {
   const up = change >= 0;
 
   return (
-    <main className="min-h-screen w-full" style={{ background: T.bg, color: T.text, fontFamily: "Inter, ui-sans-serif, system-ui" }}>
+    <main className="portfolio-shell min-h-screen w-full bg-background text-foreground" style={{ background: T.bg, color: T.text }}>
       <div className="mx-auto flex min-h-screen w-full max-w-5xl flex-col px-3 pb-24 pt-3 sm:px-4">
-        <header className="mb-3 flex items-center justify-between rounded-2xl border px-4 py-3" style={{ background: T.card, borderColor: T.border }}>
-          <div>
-            <div className="flex items-center gap-2 text-lg font-semibold">
-              <RefreshCw size={16} className="text-primary" />
-              <span>EABO Test</span>
+        {paymentModal.open && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 px-3 py-6">
+            <div className="w-full max-w-md rounded-3xl border p-4 shadow-2xl" style={{ background: T.card, borderColor: T.border }}>
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="section-kicker">{paymentModal.type === "subscribe" ? "Bot subscription" : paymentModal.type === "topup" ? "Top-up request" : "Withdrawal request"}</div>
+                  <div className="mt-1 text-xl font-semibold">{paymentModal.type === "subscribe" ? "Secure crypto payment" : paymentModal.type === "topup" ? "Add funds safely" : "Withdraw to a wallet"}</div>
+                </div>
+                <button onClick={closePaymentModal} className="rounded-full border p-2" style={{ background: T.cardAlt, borderColor: T.border, color: T.textDim }}>
+                  <X size={16} />
+                </button>
+              </div>
+
+              <div className="mt-4 rounded-2xl border p-3" style={{ background: T.cardAlt, borderColor: T.border }}>
+                <div className="mb-3 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.2em]" style={{ color: T.textFaint }}>
+                  <span className={paymentModal.step === "details" ? "text-teal-400" : "text-muted-foreground"}>1. Details</span>
+                  <span style={{ color: T.textFaint }}>•</span>
+                  <span className={paymentModal.step === "payment" || paymentModal.step === "pending" ? "text-teal-400" : "text-muted-foreground"}>2. Payment</span>
+                </div>
+
+                {paymentModal.step === "pending" ? (
+                  <div className="rounded-2xl border p-4 text-center" style={{ background: T.card, borderColor: T.border }}>
+                    <div className="mx-auto mb-3 flex size-12 items-center justify-center rounded-full border" style={{ background: T.tealSoft, borderColor: `${T.teal}33`, color: T.teal }}>
+                      <RefreshCw size={20} className="animate-spin" />
+                    </div>
+                    <div className="text-sm font-semibold">Pending confirmation</div>
+                    <div className="mt-2 text-xs leading-relaxed" style={{ color: T.textDim }}>
+                      Your request is being processed and will be finalized shortly.
+                    </div>
+                  </div>
+                ) : paymentModal.step === "details" ? (
+                  <>
+                    <label className="mb-1 block text-[10px] uppercase tracking-[0.2em]" style={{ color: T.textFaint }}>Network</label>
+                    <select
+                      value={paymentModal.selectedNetwork}
+                      onChange={(event) => {
+                        const network = event.target.value;
+                        setPaymentModal((prev) => ({ ...prev, selectedNetwork: network, address: getPaymentAddress(network) }));
+                      }}
+                      className="w-full rounded-lg border px-3 py-2 text-sm" style={{ background: T.card, borderColor: T.border, color: T.text }}
+                    >
+                      <option value="BTC">Bitcoin</option>
+                      <option value="ETH">Ethereum</option>
+                      <option value="USDT TRC20">USDT TRC20</option>
+                      <option value="USDC">USDC</option>
+                      <option value="SOL">Solana</option>
+                    </select>
+
+                    <label className="mt-3 mb-1 block text-[10px] uppercase tracking-[0.2em]" style={{ color: T.textFaint }}>Amount</label>
+                    <input
+                      type="number"
+                      min="1"
+                      value={paymentModal.amount}
+                      onChange={(event) => setPaymentModal((prev) => ({ ...prev, amount: event.target.value }))}
+                      className="w-full rounded-lg border px-3 py-2 text-sm" style={{ background: T.card, borderColor: T.border, color: T.text }}
+                    />
+                  </>
+                ) : (
+                  <>
+                    <div className="flex items-center justify-between rounded-2xl border p-3" style={{ background: T.card, borderColor: T.border }}>
+                      <div>
+                        <div className="text-[10px] uppercase tracking-[0.2em]" style={{ color: T.textFaint }}>Network</div>
+                        <div className="mt-1 text-sm font-semibold">{paymentModal.selectedNetwork}</div>
+                      </div>
+                      <div className="text-right">
+                        <div className="text-[10px] uppercase tracking-[0.2em]" style={{ color: T.textFaint }}>Amount</div>
+                        <div className="mt-1 text-sm font-semibold">{fmtMoney(Number(paymentModal.amount || 0))}</div>
+                      </div>
+                    </div>
+
+                    <div className="mt-3 flex items-center justify-between rounded-2xl border p-3" style={{ background: T.card, borderColor: T.border }}>
+                      <div className="pr-3">
+                        <div className="text-[10px] uppercase tracking-[0.2em]" style={{ color: T.textFaint }}>{paymentModal.type === "withdraw" ? "Destination wallet" : "Deposit address"}</div>
+                        <div className="mt-1 break-all font-mono text-xs" style={{ color: T.text }}>{paymentModal.address}</div>
+                      </div>
+                      <div className="rounded-xl border p-2" style={{ background: T.cardAlt, borderColor: T.border }}>
+                        <div className="grid grid-cols-4 gap-1">
+                          {Array.from({ length: 24 }).map((_, index) => (
+                            <div key={index} className="h-2.5 w-2.5 rounded-sm" style={{ background: index % 2 === 0 ? T.teal : T.textFaint }} />
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
+
+              {paymentModal.step === "payment" && (
+                <>
+                  <div className="mt-4 flex items-center justify-between rounded-2xl border px-3 py-2" style={{ background: T.cardAlt, borderColor: T.border }}>
+                    <div>
+                      <div className="text-[10px] uppercase tracking-[0.2em]" style={{ color: T.textFaint }}>Expiry</div>
+                      <div className="text-sm font-semibold" style={{ color: paymentModal.countdown > 0 ? T.teal : T.red }}>{formatCountdown(paymentModal.countdown)}</div>
+                    </div>
+                    <div className="text-right text-xs" style={{ color: T.textDim }}>
+                      <div>Secure wallet transfer</div>
+                      <div>20 minute window</div>
+                    </div>
+                  </div>
+
+                  {paymentModal.type === "withdraw" && (
+                    <div className="mt-4 rounded-2xl border p-3" style={{ background: T.cardAlt, borderColor: T.border }}>
+                      <label className="mb-1 block text-[10px] uppercase tracking-[0.2em]" style={{ color: T.textFaint }}>Destination wallet</label>
+                      <input
+                        value={paymentModal.address}
+                        onChange={(event) => setPaymentModal((prev) => ({ ...prev, address: event.target.value }))}
+                        placeholder="Enter wallet address"
+                        className="w-full rounded-lg border px-3 py-2 text-sm" style={{ background: T.card, borderColor: T.border, color: T.text }}
+                      />
+                    </div>
+                  )}
+                </>
+              )}
+
+              <div className="mt-4 flex gap-2">
+                <button onClick={closePaymentModal} className="flex-1 rounded-xl border px-3 py-2 text-sm font-semibold" style={{ background: T.cardAlt, borderColor: T.border, color: T.text }}>
+                  Cancel
+                </button>
+                {paymentModal.step === "details" ? (
+                  <button onClick={showPaymentDetails} className="flex-1 rounded-xl px-3 py-2 text-sm font-semibold" style={{ background: T.teal, color: "#04231F" }}>
+                    Continue
+                  </button>
+                ) : paymentModal.step === "pending" ? (
+                  <button className="flex-1 rounded-xl px-3 py-2 text-sm font-semibold" style={{ background: T.border, color: T.textDim }} disabled>
+                    Pending confirmation
+                  </button>
+                ) : (
+                  <button onClick={confirmPayment} disabled={paymentModal.countdown <= 0} className="flex-1 rounded-xl px-3 py-2 text-sm font-semibold" style={{ background: paymentModal.countdown > 0 ? T.teal : T.border, color: paymentModal.countdown > 0 ? "#04231F" : T.textDim }}>
+                    {paymentModal.type === "subscribe" ? "Confirm subscription" : paymentModal.type === "topup" ? "Confirm top-up" : "Confirm withdrawal"}
+                  </button>
+                )}
+              </div>
             </div>
-            <div className="text-sm" style={{ color: T.textDim }}>Paper trading engine with real math and live bot logic</div>
           </div>
-          <div className="rounded-full border px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide" style={{ background: T.cardAlt, borderColor: T.border, color: T.teal }}>
-            <span className="mr-2 inline-block h-2 w-2 rounded-full bg-primary" /> LIVE
+        )}
+        <header className="mb-3 flex items-center justify-between rounded-2xl border px-4 py-3" style={{ background: T.card, borderColor: T.border }}>
+          <div className="flex items-center gap-3">
+            <div className="flex size-11 items-center justify-center rounded-2xl border border-primary/25 bg-primary/10">
+              <RefreshCw size={18} className="text-primary" />
+            </div>
+            <div>
+              <p className="section-kicker">Paper trading</p>
+              <h1 className="section-title">EABO Test</h1>
+            </div>
+          </div>
+          <div className="inline-flex items-center gap-2 rounded-full border border-primary/25 bg-primary/10 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.24em] text-primary" style={{ borderColor: T.border }}>
+            <span className="inline-block h-2 w-2 rounded-full bg-primary" /> LIVE
           </div>
         </header>
 
         <section className="mb-3 rounded-2xl border p-4" style={{ background: T.card, borderColor: T.border }}>
-          <div className="mb-3 flex items-center justify-between">
+          <div className="text-[11px] uppercase tracking-wider mb-1" style={{ color: T.textFaint }}>
+            Floating P/L
+          </div>
+          <div className="text-3xl font-bold font-mono tabular-nums" style={{ color: unrealizedTotal >= 0 ? T.teal : T.red }}>
+            {unrealizedTotal >= 0 ? "+" : ""}
+            {fmtMoney(animProfit)}
+          </div>
+          <div className="mt-3 flex items-center justify-between">
             <div>
-              <div className="text-[11px] uppercase tracking-[0.2em]" style={{ color: T.textFaint }}>Equity snapshot</div>
-              <div className="text-3xl font-semibold font-mono" style={{ color: unrealizedTotal >= 0 ? T.teal : T.red }}>{unrealizedTotal >= 0 ? "+" : ""}{fmtMoney(animProfit)}</div>
-            </div>
-            <div className="text-right">
-              <div className="text-[11px] uppercase tracking-[0.2em]" style={{ color: T.textFaint }}>Balance</div>
-              <div className="text-lg font-semibold font-mono">{fmtMoney(animBalance)}</div>
+              <div className="text-[11px] uppercase tracking-wider" style={{ color: T.textFaint }}>
+                Balance
+              </div>
+              <div className="text-lg font-semibold font-mono" style={{ color: T.text }}>
+                {fmtMoney(animBalance)}
+              </div>
             </div>
           </div>
-          <div className="grid gap-2 text-sm sm:grid-cols-3">
-            <div className="rounded-xl border p-3" style={{ background: T.cardAlt, borderColor: T.border }}>
-              <div className="text-[10px] uppercase tracking-[0.2em]" style={{ color: T.textFaint }}>Equity</div>
-              <div className="mt-1 font-mono font-semibold">{fmtMoney(animEquity)}</div>
+          <div className="mt-3 grid grid-cols-3 gap-2 pt-3" style={{ borderTop: `1px solid ${T.borderSoft}` }}>
+            <div>
+              <div className="text-[10px] uppercase tracking-wider" style={{ color: T.textFaint }}>
+                Equity
+              </div>
+              <div className="text-sm font-semibold font-mono" style={{ color: T.text }}>
+                {fmtMoney(animEquity)}
+              </div>
             </div>
-            <div className="rounded-xl border p-3" style={{ background: T.cardAlt, borderColor: T.border }}>
-              <div className="text-[10px] uppercase tracking-[0.2em]" style={{ color: T.textFaint }}>Margin</div>
-              <div className="mt-1 font-mono font-semibold">{fmtMoney(usedMargin)}</div>
+            <div>
+              <div className="text-[10px] uppercase tracking-wider" style={{ color: T.textFaint }}>
+                Margin
+              </div>
+              <div className="text-sm font-semibold font-mono" style={{ color: T.text }}>
+                {fmtMoney(usedMargin)}
+              </div>
             </div>
-            <div className="rounded-xl border p-3" style={{ background: T.cardAlt, borderColor: T.border }}>
-              <div className="text-[10px] uppercase tracking-[0.2em]" style={{ color: T.textFaint }}>Free</div>
-              <div className="mt-1 font-mono font-semibold">{fmtMoney(freeMargin)}</div>
+            <div>
+              <div className="text-[10px] uppercase tracking-wider" style={{ color: T.textFaint }}>
+                Free
+              </div>
+              <div className="text-sm font-semibold font-mono" style={{ color: T.text }}>
+                {fmtMoney(freeMargin)}
+              </div>
             </div>
           </div>
         </section>
+
+        <div className="mb-3 rounded-2xl border p-3" style={{ background: T.card, borderColor: T.border }}>
+          <div className="mb-3 flex items-center justify-between">
+            <div>
+              <div className="section-kicker">Premium access</div>
+              <div className="text-sm font-semibold">Subscribe for bot</div>
+            </div>
+            <div className="rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.2em]" style={{ background: subscription.active ? T.tealSoft : T.amberSoft, borderColor: T.border, color: subscription.active ? T.teal : T.amber }}>
+              {subscription.active ? "Active" : "Available"}
+            </div>
+          </div>
+          <button onClick={() => openPaymentModal("subscribe")} className="w-full rounded-2xl border p-3.5 text-left shadow-[0_0_0_1px_rgba(255,255,255,0.02)_inset] transition-all duration-200 hover:-translate-y-0.5" style={{ background: `linear-gradient(135deg, ${T.card} 0%, ${T.cardAlt} 100%)`, borderColor: T.border }}>
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <div className="flex size-11 items-center justify-center rounded-2xl border" style={{ background: T.tealSoft, borderColor: `${T.teal}33`, color: T.teal }}>
+                  <Bot size={18} />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <div className="text-sm font-semibold">Subscribe for bot</div>
+                    <div className="rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide" style={{ background: T.tealSoft, borderColor: `${T.teal}33`, color: T.teal }}>Premium</div>
+                  </div>
+                  <div className="mt-1 text-xs leading-relaxed" style={{ color: T.textDim }}>Unlock premium automation and richer signals for {fmtMoney(99)}.</div>
+                </div>
+              </div>
+              <div className="text-sm font-semibold" style={{ color: T.teal }}>Join</div>
+            </div>
+            <div className="mt-3 flex items-center justify-between border-t pt-3 text-[11px] uppercase tracking-[0.2em]" style={{ borderColor: T.borderSoft, color: T.textFaint }}>
+              <span>Priority access</span>
+              <span>Instant activation</span>
+            </div>
+          </button>
+        </div>
 
         <div className="mb-3 grid grid-cols-4 gap-2 rounded-2xl border p-2" style={{ background: T.card, borderColor: T.border }}>
           {[
@@ -682,7 +1009,7 @@ export function EABOTestPage() {
                 <CandleChart candles={current.candles} decimals={currentDef.decimals} />
               </div>
               <Panel>
-                <div className="mb-3 text-[11px] uppercase tracking-[0.2em]" style={{ color: T.textFaint }}>Live indicators</div>
+                <div className="mb-3 section-kicker">Live indicators</div>
                 <div className="space-y-2.5">
                   <IndicatorBar label="Trend (EMA)" value={((current.indicators.ema12 - current.indicators.ema26) / current.indicators.ema26) * 1000} />
                   <IndicatorBar label="Momentum (RSI)" value={current.indicators.rsiVal - 50} />
@@ -699,7 +1026,7 @@ export function EABOTestPage() {
           {tab === "botting" && (
             <div className="space-y-4">
               <Panel>
-                <div className="mb-3 text-[11px] uppercase tracking-[0.2em]" style={{ color: T.textFaint }}>Manual order</div>
+                <div className="mb-3 section-kicker">Manual order</div>
                 <div className="mb-3 grid gap-2 sm:grid-cols-2">
                   <select value={tradeForm.symbol} onChange={(event) => setTradeForm((prev) => ({ ...prev, symbol: event.target.value }))} className="rounded-lg border px-3 py-2 text-sm" style={{ background: T.cardAlt, borderColor: T.border, color: T.text }}>
                     {SYMBOL_DEFS.map((item) => <option key={item.id} value={item.id}>{item.id}</option>)}
@@ -714,7 +1041,7 @@ export function EABOTestPage() {
               </Panel>
 
               <Panel>
-                <div className="mb-3 text-[11px] uppercase tracking-[0.2em]" style={{ color: T.textFaint }}>Bot setup</div>
+                <div className="mb-3 section-kicker">Bot setup</div>
                 <div className="mb-3 grid gap-2 sm:grid-cols-2">
                   <div>
                     <label className="mb-1 block text-[10px] uppercase tracking-[0.2em]" style={{ color: T.textFaint }}>Strategy</label>
@@ -744,7 +1071,7 @@ export function EABOTestPage() {
 
               <Panel>
                 <div className="mb-3 flex items-center justify-between">
-                  <div className="text-[11px] uppercase tracking-[0.2em]" style={{ color: T.textFaint }}>Open positions</div>
+                  <div className="section-kicker">Open positions</div>
                   <Badge tone="gray">{positions.length}</Badge>
                 </div>
                 {positions.length === 0 ? (
@@ -809,7 +1136,7 @@ export function EABOTestPage() {
                         <div><div className="text-[10px] uppercase" style={{ color: T.textFaint }}>Next</div><div className="mt-1 font-mono font-semibold">{bot.running ? `${secondsLeft}s` : "paused"}</div></div>
                       </div>
                       <div className="border-b p-4" style={{ borderColor: T.borderSoft }}>
-                        <div className="mb-2 text-[11px] uppercase tracking-[0.2em]" style={{ color: T.textFaint }}>Signal reasoning</div>
+                        <div className="mb-2 section-kicker">Signal reasoning</div>
                         <div className="rounded-lg border p-2.5 text-xs leading-relaxed" style={{ background: T.card, borderColor: T.border, color: T.textDim }}>
                           {signal ? signal.reason : "Waiting for the first check to compute EMA, RSI, and Efficiency Ratio from live ticks…"}
                         </div>
@@ -826,7 +1153,7 @@ export function EABOTestPage() {
                       <div className="p-4">
                         <div className="mb-2 flex items-center gap-1.5">
                           <span className="text-base">🧠</span>
-                          <span className="text-[11px] uppercase tracking-[0.2em]" style={{ color: T.textFaint }}>Ask the model</span>
+                          <span className="section-kicker">Ask the model</span>
                         </div>
                         <div className="mb-3 flex gap-2">
                           <input value={askText} onChange={(event) => setAskText(event.target.value)} onKeyDown={(event) => event.key === "Enter" && askModel(bot)} placeholder="Ask why HOLD or BUY…" className="flex-1 rounded-lg border px-3 py-2 text-xs" style={{ background: T.card, borderColor: T.border, color: T.text }} />
@@ -847,7 +1174,7 @@ export function EABOTestPage() {
           {tab === "accounting" && (
             <div className="space-y-4">
               <Panel>
-                <div className="mb-3 text-[11px] uppercase tracking-[0.2em]" style={{ color: T.textFaint }}>Demo accounting</div>
+                <div className="mb-3 section-kicker">Demo accounting</div>
                 {[
                   ["Account ID", "DEMO-100294"],
                   ["Currency", "USD"],
@@ -860,7 +1187,7 @@ export function EABOTestPage() {
                 ].map(([label, value]) => <div key={label} className="flex items-center justify-between border-b py-2 text-sm" style={{ borderColor: T.borderSoft }}><span style={{ color: T.textDim }}>{label}</span><span className="font-mono font-semibold">{value}</span></div>)}
               </Panel>
               <Panel>
-                <div className="mb-3 text-[11px] uppercase tracking-[0.2em]" style={{ color: T.textFaint }}>Activity</div>
+                <div className="mb-3 section-kicker">Activity</div>
                 <div className="space-y-2 text-xs">
                   {activity.map((item, index) => <div key={index} className="flex gap-2"><span className="shrink-0 font-mono" style={{ color: T.textFaint }}>{new Date(item.t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span><span style={{ color: item.kind === "buy" ? T.teal : item.kind === "sell" ? T.red : T.textDim }}>{item.text}</span></div>)}
                 </div>
@@ -870,19 +1197,122 @@ export function EABOTestPage() {
 
           {tab === "tools" && (
             <div className="space-y-4">
-              <div className="rounded-2xl border border-amber-400/30 p-4" style={{ background: T.amberSoft }}>
-                <div className="mb-2 flex items-center gap-2 text-sm font-semibold" style={{ color: T.amber }}><AlertTriangle size={16} /> Paper simulator notice</div>
-                <div className="text-sm leading-relaxed" style={{ color: T.text }}>
-                  This screen is a self-contained simulator. Prices are procedural, indicators are computed from live candle history, and every bot decision is generated from actual EMA/RSI/Efficiency Ratio values.
-                </div>
-              </div>
               <Panel>
-                <div className="mb-3 text-[11px] uppercase tracking-[0.2em]" style={{ color: T.textFaint }}>Simulation controls</div>
+                <div className="mb-3 section-kicker">Trading tools</div>
+                <div className="rounded-2xl border p-4" style={{ background: T.cardAlt, borderColor: T.border }}>
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-semibold">Current account</div>
+                      <div className="mt-1 text-sm" style={{ color: T.textDim }}>
+                        {subscription.active ? `${subscription.plan} · ${fmtMoney(subscription.amount)}/mo` : "Starter plan · no active bot subscription"}
+                      </div>
+                    </div>
+                    <div className="rounded-full border px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide" style={{ background: T.tealSoft, borderColor: T.border, color: T.teal }}>
+                      {subscription.active ? "Active" : "Basic"}
+                    </div>
+                  </div>
+                  <div className="mt-4 grid gap-3">
+                    <button onClick={() => openPaymentModal("subscribe")} className="group rounded-2xl border p-3.5 text-left shadow-[0_0_0_1px_rgba(255,255,255,0.02)_inset] transition-all duration-200 hover:-translate-y-0.5" style={{ background: `linear-gradient(135deg, ${T.card} 0%, ${T.cardAlt} 100%)`, borderColor: T.border }}>
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="flex items-center gap-3">
+                          <div className="flex size-11 items-center justify-center rounded-2xl border" style={{ background: T.tealSoft, borderColor: `${T.teal}33`, color: T.teal }}>
+                            <Bot size={18} />
+                          </div>
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <div className="text-sm font-semibold">Subscribe for bot</div>
+                              <div className="rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide" style={{ background: T.tealSoft, borderColor: `${T.teal}33`, color: T.teal }}>Premium</div>
+                            </div>
+                            <div className="mt-1 text-xs leading-relaxed" style={{ color: T.textDim }}>Unlock premium automation and richer signals for {fmtMoney(99)}.</div>
+                          </div>
+                        </div>
+                        <div className="text-sm font-semibold" style={{ color: T.teal }}>Join</div>
+                      </div>
+                      <div className="mt-3 flex items-center justify-between border-t pt-3 text-[11px] uppercase tracking-[0.2em]" style={{ borderColor: T.borderSoft, color: T.textFaint }}>
+                        <span>Priority access</span>
+                        <span>Instant activation</span>
+                      </div>
+                    </button>
+
+                    <button onClick={() => openPaymentModal("topup")} className="group rounded-2xl border p-3.5 text-left shadow-[0_0_0_1px_rgba(255,255,255,0.02)_inset] transition-all duration-200 hover:-translate-y-0.5" style={{ background: `linear-gradient(135deg, ${T.card} 0%, ${T.cardAlt} 100%)`, borderColor: T.border }}>
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="flex items-center gap-3">
+                          <div className="flex size-11 items-center justify-center rounded-2xl border" style={{ background: T.amberSoft, borderColor: `${T.amber}33`, color: T.amber }}>
+                            <Plus size={18} />
+                          </div>
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <div className="text-sm font-semibold">Top up to trade</div>
+                              <div className="rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide" style={{ background: T.amberSoft, borderColor: `${T.amber}33`, color: T.amber }}>Fast</div>
+                            </div>
+                            <div className="mt-1 text-xs leading-relaxed" style={{ color: T.textDim }}>Add {fmtMoney(500)} to keep your account funded for live trading.</div>
+                          </div>
+                        </div>
+                        <div className="text-sm font-semibold" style={{ color: T.amber }}>Add</div>
+                      </div>
+                      <div className="mt-3 flex items-center justify-between border-t pt-3 text-[11px] uppercase tracking-[0.2em]" style={{ borderColor: T.borderSoft, color: T.textFaint }}>
+                        <span>Low friction</span>
+                        <span>Same-day credit</span>
+                      </div>
+                    </button>
+
+                    <button onClick={() => openPaymentModal("withdraw")} className="group rounded-2xl border p-3.5 text-left shadow-[0_0_0_1px_rgba(255,255,255,0.02)_inset] transition-all duration-200 hover:-translate-y-0.5" style={{ background: `linear-gradient(135deg, ${T.card} 0%, ${T.cardAlt} 100%)`, borderColor: T.border }}>
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="flex items-center gap-3">
+                          <div className="flex size-11 items-center justify-center rounded-2xl border" style={{ background: T.redSoft, borderColor: `${T.red}33`, color: T.red }}>
+                            <ArrowDown size={18} />
+                          </div>
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <div className="text-sm font-semibold">Withdraw</div>
+                              <div className="rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide" style={{ background: T.redSoft, borderColor: `${T.red}33`, color: T.red }}>Secure</div>
+                            </div>
+                            <div className="mt-1 text-xs leading-relaxed" style={{ color: T.textDim }}>Withdraw {fmtMoney(250)} with protected wallet confirmation.</div>
+                          </div>
+                        </div>
+                        <div className="text-sm font-semibold" style={{ color: T.red }}>Cash out</div>
+                      </div>
+                      <div className="mt-3 flex items-center justify-between border-t pt-3 text-[11px] uppercase tracking-[0.2em]" style={{ borderColor: T.borderSoft, color: T.textFaint }}>
+                        <span>Verified wallet</span>
+                        <span>Protected flow</span>
+                      </div>
+                    </button>
+                  </div>
+                </div>
+              </Panel>
+
+              <Panel>
+                <div className="mb-3 section-kicker">Quick controls</div>
                 <button onClick={resetSimulation} className="flex items-center gap-2 rounded-lg border px-3 py-2 text-sm" style={{ background: T.cardAlt, borderColor: T.border, color: T.text }}><RotateCcw size={14} /> Reset simulation</button>
               </Panel>
+
               <Panel>
-                <div className="mb-3 text-[11px] uppercase tracking-[0.2em]" style={{ color: T.textFaint }}>Engine details</div>
+                <div className="mb-3 section-kicker">Engine details</div>
                 {[["Tick interval", `${TICK_MS} ms`], ["Leverage", `1:${LEVERAGE}`], ["Symbols", SYMBOL_DEFS.map((item) => item.id).join(", ")]].map(([label, value]) => <div key={label} className="flex items-center justify-between border-b py-2 text-sm" style={{ borderColor: T.borderSoft }}><span style={{ color: T.textDim }}>{label}</span><span className="font-mono">{value}</span></div>)}
+              </Panel>
+
+              <Panel>
+                <div className="mb-3 flex items-center justify-between">
+                  <div className="section-kicker">Request history</div>
+                  <div className="rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.2em]" style={{ background: T.tealSoft, borderColor: T.border, color: T.teal }}>
+                    Pending
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  {pendingRequests.map((request) => (
+                    <div key={request.id} className="rounded-xl border p-3" style={{ background: T.cardAlt, borderColor: T.border }}>
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <div className="text-sm font-semibold">{request.title}</div>
+                          {request.amount !== undefined && <div className="mt-1 text-xs" style={{ color: T.textDim }}>{fmtMoney(request.amount)}</div>}
+                        </div>
+                        <div className="rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.2em]" style={{ background: request.status === "Pending" ? T.tealSoft : T.amberSoft, borderColor: T.border, color: request.status === "Pending" ? T.teal : T.amber }}>
+                          {request.status}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
               </Panel>
             </div>
           )}
