@@ -464,6 +464,7 @@ export function EABOTestPage() {
   const [selectedSymbol, setSelectedSymbol] = useState(persistedState?.selectedSymbol ?? "XAUUSD");
   const [botForm, setBotForm] = useState(persistedState?.botForm ?? { symbol: "XAUUSD", strategyId: "momentum" as StrategyId, timeframe: "1h", checkSec: 60 });
   const [tradeForm, setTradeForm] = useState(persistedState?.tradeForm ?? { symbol: "XAUUSD", dir: 1 as 1 | -1, lots: 0.1 });
+  const [manualOrderCollapsed, setManualOrderCollapsed] = useState(true);
   const [askText, setAskText] = useState(persistedState?.askText ?? "");
   const [subscription, setSubscription] = useState(persistedState?.subscription ?? { active: false, plan: "Basic", amount: 0 });
   const [pendingRequests, setPendingRequests] = useState<PendingRequest[]>([
@@ -1009,6 +1010,34 @@ export function EABOTestPage() {
                 <CandleChart candles={current.candles} decimals={currentDef.decimals} />
               </div>
               <Panel>
+                <div className="mb-3 section-kicker">Bot setup</div>
+                <div className="mb-3 grid gap-2 sm:grid-cols-2">
+                  <div>
+                    <label className="mb-1 block text-[10px] uppercase tracking-[0.2em]" style={{ color: T.textFaint }}>Strategy</label>
+                    <select value={botForm.strategyId} onChange={(event) => setBotForm((prev) => ({ ...prev, strategyId: event.target.value as StrategyId }))} className="w-full rounded-lg border px-2.5 py-2 text-sm" style={{ background: T.cardAlt, borderColor: T.border, color: T.text }}>
+                      {Object.entries(STRATEGIES).map(([id, item]) => <option key={id} value={id}>{item.label}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-[10px] uppercase tracking-[0.2em]" style={{ color: T.textFaint }}>Symbol</label>
+                    <select value={botForm.symbol} onChange={(event) => setBotForm((prev) => ({ ...prev, symbol: event.target.value }))} className="w-full rounded-lg border px-2.5 py-2 text-sm" style={{ background: T.cardAlt, borderColor: T.border, color: T.text }}>
+                      {SYMBOL_DEFS.map((item) => <option key={item.id} value={item.id}>{item.id}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-[10px] uppercase tracking-[0.2em]" style={{ color: T.textFaint }}>Timeframe</label>
+                    <select value={botForm.timeframe} onChange={(event) => setBotForm((prev) => ({ ...prev, timeframe: event.target.value }))} className="w-full rounded-lg border px-2.5 py-2 text-sm" style={{ background: T.cardAlt, borderColor: T.border, color: T.text }}>
+                      {['1m', '5m', '15m', '1h', '4h'].map((timeframe) => <option key={timeframe} value={timeframe}>{timeframe}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-[10px] uppercase tracking-[0.2em]" style={{ color: T.textFaint }}>Check every (sec)</label>
+                    <input type="number" min="5" value={botForm.checkSec} onChange={(event) => setBotForm((prev) => ({ ...prev, checkSec: Number(event.target.value) }))} className="w-full rounded-lg border px-2.5 py-2 text-sm" style={{ background: T.cardAlt, borderColor: T.border, color: T.text }} />
+                  </div>
+                </div>
+                <button onClick={startBot} className="flex w-full items-center justify-center gap-2 rounded-lg py-2.5 text-sm font-semibold" style={{ background: T.teal, color: "#04231F" }}><Play size={15} /> Start bot</button>
+              </Panel>
+              <Panel>
                 <div className="mb-3 section-kicker">Live indicators</div>
                 <div className="space-y-2.5">
                   <IndicatorBar label="Trend (EMA)" value={((current.indicators.ema12 - current.indicators.ema26) / current.indicators.ema26) * 1000} />
@@ -1025,21 +1054,6 @@ export function EABOTestPage() {
 
           {tab === "botting" && (
             <div className="space-y-4">
-              <Panel>
-                <div className="mb-3 section-kicker">Manual order</div>
-                <div className="mb-3 grid gap-2 sm:grid-cols-2">
-                  <select value={tradeForm.symbol} onChange={(event) => setTradeForm((prev) => ({ ...prev, symbol: event.target.value }))} className="rounded-lg border px-3 py-2 text-sm" style={{ background: T.cardAlt, borderColor: T.border, color: T.text }}>
-                    {SYMBOL_DEFS.map((item) => <option key={item.id} value={item.id}>{item.id}</option>)}
-                  </select>
-                  <input type="number" step="0.01" min="0.01" value={tradeForm.lots} onChange={(event) => setTradeForm((prev) => ({ ...prev, lots: Number(event.target.value) }))} className="rounded-lg border px-3 py-2 text-sm" style={{ background: T.cardAlt, borderColor: T.border, color: T.text }} />
-                </div>
-                <div className="mb-3 grid gap-2 sm:grid-cols-2">
-                  <button onClick={() => setTradeForm((prev) => ({ ...prev, dir: 1 }))} className="flex items-center justify-center gap-1 rounded-lg border py-2 text-sm font-semibold" style={{ background: tradeForm.dir === 1 ? T.tealSoft : T.cardAlt, borderColor: tradeForm.dir === 1 ? T.teal : T.border, color: tradeForm.dir === 1 ? T.teal : T.textDim }}><ArrowUp size={14} /> Buy</button>
-                  <button onClick={() => setTradeForm((prev) => ({ ...prev, dir: -1 }))} className="flex items-center justify-center gap-1 rounded-lg border py-2 text-sm font-semibold" style={{ background: tradeForm.dir === -1 ? T.redSoft : T.cardAlt, borderColor: tradeForm.dir === -1 ? T.red : T.border, color: tradeForm.dir === -1 ? T.red : T.textDim }}><ArrowDown size={14} /> Sell</button>
-                </div>
-                <button onClick={openManualPosition} className="flex w-full items-center justify-center gap-2 rounded-lg py-2.5 text-sm font-semibold" style={{ background: T.teal, color: "#04231F" }}><Plus size={16} /> Open position</button>
-              </Panel>
-
               <Panel>
                 <div className="mb-3 section-kicker">Bot setup</div>
                 <div className="mb-3 grid gap-2 sm:grid-cols-2">
@@ -1067,6 +1081,50 @@ export function EABOTestPage() {
                   </div>
                 </div>
                 <button onClick={startBot} className="flex w-full items-center justify-center gap-2 rounded-lg py-2.5 text-sm font-semibold" style={{ background: T.teal, color: "#04231F" }}><Play size={15} /> Start bot</button>
+              </Panel>
+
+              <Panel>
+                <button type="button" onClick={() => setManualOrderCollapsed((prev) => !prev)} className="mb-3 flex w-full items-center justify-between rounded-xl border px-3 py-2 text-left transition" style={{ background: "transparent", borderColor: T.border, color: T.textDim }}>
+                  <div>
+                    <div className="section-kicker">Manual order</div>
+                    <div className="mt-1 text-[10px] uppercase tracking-[0.2em]" style={{ color: T.textFaint }}>
+                      {manualOrderCollapsed ? "Tap to open" : "Tap to collapse"}
+                    </div>
+                  </div>
+                  <div className="text-sm" style={{ color: T.textFaint }}>{manualOrderCollapsed ? "▸" : "▾"}</div>
+                </button>
+                {!manualOrderCollapsed && (
+                  <div className="space-y-3">
+                    <div className="text-[11px] uppercase tracking-[0.2em]" style={{ color: T.textFaint }}>Choose the market and size before placing the trade</div>
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      <div>
+                        <label className="mb-1 block text-[10px] uppercase tracking-[0.2em]" style={{ color: T.textFaint }}>Symbol</label>
+                        <select value={tradeForm.symbol} onChange={(event) => setTradeForm((prev) => ({ ...prev, symbol: event.target.value }))} className="w-full rounded-lg border px-3 py-2 text-sm" style={{ background: T.cardAlt, borderColor: T.border, color: T.text }}>
+                          {SYMBOL_DEFS.map((item) => <option key={item.id} value={item.id}>{item.id}</option>)}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="mb-1 block text-[10px] uppercase tracking-[0.2em]" style={{ color: T.textFaint }}>Lot size</label>
+                        <input type="number" step="0.01" min="0.01" value={tradeForm.lots} onChange={(event) => setTradeForm((prev) => ({ ...prev, lots: Number(event.target.value) }))} className="w-full rounded-lg border px-3 py-2 text-sm" style={{ background: T.cardAlt, borderColor: T.border, color: T.text }} />
+                      </div>
+                    </div>
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      <div>
+                        <label className="mb-1 block text-[10px] uppercase tracking-[0.2em]" style={{ color: T.textFaint }}>Take profit</label>
+                        <input type="number" step="0.01" min="0.01" placeholder="Optional" className="w-full rounded-lg border px-3 py-2 text-sm" style={{ background: T.cardAlt, borderColor: T.border, color: T.text }} />
+                      </div>
+                      <div>
+                        <label className="mb-1 block text-[10px] uppercase tracking-[0.2em]" style={{ color: T.textFaint }}>Stop loss</label>
+                        <input type="number" step="0.01" min="0.01" placeholder="Optional" className="w-full rounded-lg border px-3 py-2 text-sm" style={{ background: T.cardAlt, borderColor: T.border, color: T.text }} />
+                      </div>
+                    </div>
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      <button onClick={() => setTradeForm((prev) => ({ ...prev, dir: 1 }))} className="flex items-center justify-center gap-1 rounded-lg border py-2 text-sm font-semibold shadow-[0_0_0_1px_rgba(16,185,129,0.2),0_0_18px_rgba(16,185,129,0.25)] animate-pulse" style={{ background: tradeForm.dir === 1 ? "rgba(16,185,129,0.18)" : T.cardAlt, borderColor: tradeForm.dir === 1 ? T.teal : T.border, color: tradeForm.dir === 1 ? T.teal : T.textDim }}><ArrowUp size={14} /> Buy</button>
+                      <button onClick={() => setTradeForm((prev) => ({ ...prev, dir: -1 }))} className="flex items-center justify-center gap-1 rounded-lg border py-2 text-sm font-semibold shadow-[0_0_0_1px_rgba(248,113,113,0.2),0_0_18px_rgba(248,113,113,0.25)] animate-pulse" style={{ background: tradeForm.dir === -1 ? "rgba(248,113,113,0.18)" : T.cardAlt, borderColor: tradeForm.dir === -1 ? T.red : T.border, color: tradeForm.dir === -1 ? T.red : T.textDim }}><ArrowDown size={14} /> Sell</button>
+                    </div>
+                    <button onClick={openManualPosition} className="flex w-full items-center justify-center gap-2 rounded-lg py-2.5 text-sm font-semibold" style={{ background: T.teal, color: "#04231F" }}><Plus size={16} /> Open position</button>
+                  </div>
+                )}
               </Panel>
 
               <Panel>
